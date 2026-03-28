@@ -1,2 +1,10 @@
-dev/backend/.env
+# Dependencies
+dev/frontend/node_modules/
 dev/backend/venv/
+dev/backend/__pycache__/
+
+# Sensitive
+dev/backend/.env
+
+# Build artifacts (optional - keep dist for nginx serving)
+# dev/frontend/dist/
