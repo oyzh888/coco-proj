@@ -1,7 +1,15 @@
 import { useState, useRef } from 'react'
 import './App.css'
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://cloth-backend.aitist.ai'
+const resolveBackendUrl = () => {
+  if (import.meta.env.VITE_BACKEND_URL) return import.meta.env.VITE_BACKEND_URL
+  if (typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+    return `${window.location.protocol}//${window.location.hostname}:3089`
+  }
+  return 'https://cloth-backend.aitist.ai'
+}
+
+const BACKEND_URL = resolveBackendUrl()
 
 const MOODS = ['Happy', 'Casual', 'Professional', 'Date Night', 'Sporty', 'Cozy']
 const SCENES = ['Daily', 'Work', 'Outdoor', 'Party', 'Gym', 'Date', 'Travel']
@@ -215,6 +223,15 @@ export default function App() {
               </div>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* QR Code Footer */}
+      <div className="qr-footer">
+        <img src="/qrcode.jpg" alt="Scan to try Coco AI" className="qr-code" />
+        <div className="qr-text">
+          <p className="qr-title">Try it on your phone</p>
+          <p className="qr-url">cloth.aitist.ai</p>
         </div>
       </div>
     </div>

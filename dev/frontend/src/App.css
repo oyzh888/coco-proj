@@ -313,6 +313,41 @@ body {
   margin-top: 8px;
 }
 
+/* ── QR Code Footer ── */
+.qr-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px 0 32px;
+  border-top: 1px solid #1f1f1f;
+  margin-top: 8px;
+}
+
+.qr-code {
+  width: 80px;
+  height: 80px;
+  border-radius: 8px;
+  border: 2px solid #2a2a2a;
+}
+
+.qr-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.qr-title {
+  font-size: 0.85rem;
+  color: #888;
+}
+
+.qr-url {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #7c3aed;
+}
+
 /* ── Mobile (portrait, ≤ 700px) ── */
 @media (max-width: 700px) {
   .app { padding: 12px; }
