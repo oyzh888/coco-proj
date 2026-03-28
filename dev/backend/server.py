@@ -1,13 +1,14 @@
 """
 Coco AI - FastAPI Backend
-Proxies chat requests to OpenClaw Gateway + generates outfit images via DALL-E 3.
+Proxies to OpenClaw Gateway (OpenAI-compatible API).
+OpenClaw is multimodal - it accepts images and can return images via its tools.
+The outfit endpoint sends a structured multimodal message and returns whatever
+OpenClaw responds with (text + any images it generates).
 """
 
 import os
 import re
 import json
-import base64
-import asyncio
 from typing import Optional
 
 import httpx
@@ -24,16 +25,13 @@ OPENCLAW_HOST = os.getenv("OPENCLAW_HOST", "localhost")
 OPENCLAW_PORT = os.getenv("OPENCLAW_PORT", "18789")
 OPENCLAW_TOKEN = os.getenv("OPENCLAW_TOKEN", "")
 OPENCLAW_AGENT_ID = os.getenv("OPENCLAW_AGENT_ID", "master")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 OPENCLAW_BASE_URL = f"http://{OPENCLAW_HOST}:{OPENCLAW_PORT}"
 CHAT_ENDPOINT = f"{OPENCLAW_BASE_URL}/v1/chat/completions"
-DALLE_ENDPOINT = "https://api.openai.com/v1/images/generations"
-
 DEFAULT_MODEL = "openclaw"
 
 # --- App ---
-app = FastAPI(title="Coco AI Backend", version="0.2.0")
+app = FastAPI(title="Coco AI Backend", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -55,17 +53,18 @@ class OutfitRequest(BaseModel):
     location: str = ""
     mood: str = ""
     scene: str = ""
-    closet_image_base64: Optional[str] = None
+    closet_image_base64: Optional[str] = None  # base64, no data URI prefix
 
 
 class ChatResponse(BaseModel):
     text: str
-    images: list[str] = []
+    images: list[str] = []  # base64 strings
 
 
 # --- Helpers ---
 
-def build_openai_messages(message: str, image_base64: Optional[str]) -> list:
+def build_messages(message: str, image_base64: Optional[str]) -> list:
+    """Build OpenAI-format messages with optional image."""
     if image_base64:
         content = [
             {"type": "text", "text": message},
@@ -76,14 +75,15 @@ def build_openai_messages(message: str, image_base64: Optional[str]) -> list:
     return [{"role": "user", "content": content}]
 
 
-def extract_images_from_text(text: str) -> tuple[str, list[str]]:
+def extract_images(text: str) -> tuple[str, list[str]]:
+    """Pull base64 images out of markdown image syntax in response text."""
     pattern = r'!\[.*?\]\(data:image/[^;]+;base64,([^)]+)\)'
     images = re.findall(pattern, text)
     cleaned = re.sub(pattern, '', text).strip()
     return cleaned, images
 
 
-def build_openclaw_headers() -> dict:
+def openclaw_headers() -> dict:
     return {
         "Authorization": f"Bearer {OPENCLAW_TOKEN}",
         "Content-Type": "application/json",
@@ -91,43 +91,19 @@ def build_openclaw_headers() -> dict:
     }
 
 
-async def generate_outfit_image(outfit_description: str) -> Optional[str]:
-    """Call DALL-E 3 to generate an outfit image. Returns base64 string or None."""
-    if not OPENAI_API_KEY:
-        return None
+async def call_openclaw(message: str, image_base64: Optional[str] = None) -> ChatResponse:
+    """Send a message to OpenClaw and return parsed ChatResponse."""
+    messages = build_messages(message, image_base64)
+    payload = {"model": DEFAULT_MODEL, "messages": messages}
 
-    # Extract key outfit items from description for a clean prompt
-    prompt = (
-        f"Fashion photography, full outfit on a clothing rack or flat lay. "
-        f"Style: {outfit_description[:300]}. "
-        f"Clean white background, professional fashion editorial photo, high quality."
-    )
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        resp = await client.post(CHAT_ENDPOINT, json=payload, headers=openclaw_headers())
+        resp.raise_for_status()
+        data = resp.json()
 
-    payload = {
-        "model": "dall-e-3",
-        "prompt": prompt,
-        "n": 1,
-        "size": "1024x1024",
-        "response_format": "b64_json",
-        "quality": "standard",
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                DALLE_ENDPOINT,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["data"][0]["b64_json"]
-    except Exception as e:
-        print(f"DALL-E error: {e}")
-        return None
+    raw = data["choices"][0]["message"]["content"]
+    text, images = extract_images(raw)
+    return ChatResponse(text=text, images=images)
 
 
 # --- Routes ---
@@ -136,8 +112,9 @@ async def generate_outfit_image(outfit_description: str) -> Optional[str]:
 async def root():
     return {
         "service": "Coco AI Backend",
+        "version": "0.3.0",
         "status": "ok",
-        "version": "0.2.0",
+        "agent": OPENCLAW_AGENT_ID,
         "docs": "/docs",
         "endpoints": ["/api/chat", "/api/outfit", "/api/chat/stream"],
     }
@@ -150,81 +127,55 @@ async def health():
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    """General chat endpoint - proxies to OpenClaw agent."""
-    messages = build_openai_messages(req.message, req.image_base64)
-    payload = {"model": DEFAULT_MODEL, "messages": messages}
-
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(CHAT_ENDPOINT, json=payload, headers=build_openclaw_headers())
-        response.raise_for_status()
-        data = response.json()
-
-    raw_text = data["choices"][0]["message"]["content"]
-    clean_text, images = extract_images_from_text(raw_text)
-    return ChatResponse(text=clean_text, images=images)
+    """General-purpose chat. Proxies to OpenClaw with optional image input."""
+    return await call_openclaw(req.message, req.image_base64)
 
 
 @app.post("/api/outfit", response_model=ChatResponse)
 async def outfit(req: OutfitRequest):
     """
-    Dedicated outfit recommendation endpoint.
-    1. Asks OpenClaw agent for outfit recommendation (text)
-    2. Generates outfit image via DALL-E 3
-    Returns text description + generated image.
+    Outfit recommendation endpoint.
+    Sends a structured multimodal request to OpenClaw.
+    OpenClaw handles everything: styling advice, image generation via its tools.
+    Returns whatever OpenClaw responds with (text + images if any).
     """
-    message = (
-        f"You are a professional fashion stylist. Generate a detailed outfit recommendation.\n\n"
-        f"User details:\n"
+    prompt = (
+        "You are a professional fashion stylist. The user wants an outfit recommendation.\n\n"
+        f"**User details:**\n"
         f"- Location: {req.location or 'Not specified'}\n"
         f"- Mood: {req.mood or 'Casual'}\n"
         f"- Scene/Occasion: {req.scene or 'Daily'}\n\n"
-        f"Please recommend 1 complete outfit. Include:\n"
-        f"1. Specific clothing items (top, bottom, outerwear if needed, shoes)\n"
-        f"2. Colors and style\n"
-        f"3. Why it matches the mood and scene\n"
-        f"4. 1-2 styling tips\n\n"
-        f"Keep your response concise and practical."
+        "Please:\n"
+        "1. Recommend 1 complete outfit (top, bottom, shoes, optional accessories)\n"
+        "2. Explain why it fits the mood and scene\n"
+        "3. Give 1-2 styling tips\n"
+        "4. If you can generate or find an outfit image, please include it\n\n"
+        "Keep the response practical and specific."
     )
+
     if req.closet_image_base64:
-        message += "\n\nThe user has provided a photo of their closet. Please base recommendations on what you see in the image."
+        prompt += "\n\nThe user has uploaded a photo of their closet. Please base recommendations on what you can see in the image."
 
-    # Step 1: Get text recommendation from OpenClaw
-    messages = build_openai_messages(message, req.closet_image_base64)
-    payload = {"model": DEFAULT_MODEL, "messages": messages}
-
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(CHAT_ENDPOINT, json=payload, headers=build_openclaw_headers())
-        response.raise_for_status()
-        data = response.json()
-
-    raw_text = data["choices"][0]["message"]["content"]
-    clean_text, existing_images = extract_images_from_text(raw_text)
-
-    # Step 2: Generate outfit image with DALL-E 3 (parallel concept)
-    image_b64 = await generate_outfit_image(clean_text)
-
-    images = existing_images
-    if image_b64:
-        images = [image_b64] + existing_images
-
-    return ChatResponse(text=clean_text, images=images)
+    return await call_openclaw(prompt, req.closet_image_base64)
 
 
 @app.post("/api/chat/stream")
 async def chat_stream(req: ChatRequest):
     """Streaming chat via SSE."""
-    messages = build_openai_messages(req.message, req.image_base64)
+    messages = build_messages(req.message, req.image_base64)
     payload = {"model": DEFAULT_MODEL, "messages": messages, "stream": True}
 
-    async def event_generator():
+    async def generate():
         accumulated = ""
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream("POST", CHAT_ENDPOINT, json=payload, headers=build_openclaw_headers()) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line or not line.startswith("data:"):
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            async with client.stream(
+                "POST", CHAT_ENDPOINT, json=payload, headers=openclaw_headers()
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
                         continue
-                    raw = line[len("data:"):].strip()
+                    raw = line[5:].strip()
                     if raw == "[DONE]":
                         break
                     try:
@@ -236,13 +187,13 @@ async def chat_stream(req: ChatRequest):
                     except (json.JSONDecodeError, KeyError):
                         continue
 
-        _, images = extract_images_from_text(accumulated)
+        _, images = extract_images(accumulated)
         for img in images:
             yield f"data: {json.dumps({'type': 'image', 'content': img})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return StreamingResponse(
-        event_generator(),
+        generate(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
