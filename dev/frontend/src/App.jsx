@@ -1,75 +1,67 @@
 import { useState, useRef } from 'react'
 import './App.css'
 
-const DEMO_IMAGE_URL = 'https://images.unsplash.com/photo-1558769132-cb1aea458c5e?w=400&q=80'
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://cloth-backend.aitist.ai'
 
-function App() {
+const MOODS = ['Happy', 'Casual', 'Professional', 'Date Night', 'Sporty', 'Cozy']
+const SCENES = ['Daily', 'Work', 'Outdoor', 'Party', 'Gym', 'Date', 'Travel']
+
+// Demo closet: a small placeholder base64 (1x1 transparent, will show as broken — use fetch instead)
+const DEMO_CLOSET_URL = 'https://images.unsplash.com/photo-1558769132-cb1aea458c5e?w=400&q=80'
+
+export default function App() {
   const [location, setLocation] = useState('')
-  const [mood, setMood] = useState('')
-  const [scene, setScene] = useState('')
-  const [closetImage, setClosetImage] = useState(null) // base64 without prefix
-  const [closetPreview, setClosetPreview] = useState(null) // full data URL for preview
+  const [mood, setMood] = useState('Casual')
+  const [scene, setScene] = useState('Daily')
+  const [closetImage, setClosetImage] = useState(null)     // { preview, base64 }
   const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState(null)
+  const [result, setResult] = useState(null)               // { text, images }
   const [error, setError] = useState(null)
-  const [isDragging, setIsDragging] = useState(false)
-  const fileInputRef = useRef(null)
+  const [dragging, setDragging] = useState(false)
+  const fileRef = useRef()
 
-  const handleImageFile = (file) => {
-    if (!file || !file.type.startsWith('image/')) return
+  // Convert File to base64 (without data URI prefix)
+  const fileToBase64 = (file) => new Promise((resolve, reject) => {
     const reader = new FileReader()
-    reader.onload = (e) => {
-      const dataUrl = e.target.result
-      setClosetPreview(dataUrl)
-      // Strip data:image/...;base64, prefix
-      const base64 = dataUrl.split(',')[1]
-      setClosetImage(base64)
+    reader.onload = () => {
+      const b64 = reader.result.split(',')[1]
+      resolve(b64)
     }
+    reader.onerror = reject
     reader.readAsDataURL(file)
-  }
+  })
 
-  const handleFileChange = (e) => {
-    handleImageFile(e.target.files[0])
+  const handleImageFile = async (file) => {
+    if (!file || !file.type.startsWith('image/')) return
+    const b64 = await fileToBase64(file)
+    setClosetImage({ preview: URL.createObjectURL(file), base64: b64 })
   }
 
   const handleDrop = (e) => {
     e.preventDefault()
-    setIsDragging(false)
-    handleImageFile(e.dataTransfer.files[0])
+    setDragging(false)
+    const file = e.dataTransfer.files[0]
+    if (file) handleImageFile(file)
   }
-
-  const handleDragOver = (e) => {
-    e.preventDefault()
-    setIsDragging(true)
-  }
-
-  const handleDragLeave = () => setIsDragging(false)
 
   const loadDemoData = async () => {
     setLocation('San Francisco, CA')
     setMood('Casual')
     setScene('Daily')
-    // Load demo image as base64
+    // Fetch demo image and convert to base64
     try {
-      const res = await fetch(DEMO_IMAGE_URL)
-      const blob = await res.blob()
-      const reader = new FileReader()
-      reader.onload = (e) => {
-        const dataUrl = e.target.result
-        setClosetPreview(dataUrl)
-        setClosetImage(dataUrl.split(',')[1])
-      }
-      reader.readAsDataURL(blob)
+      const resp = await fetch(DEMO_CLOSET_URL)
+      const blob = await resp.blob()
+      const file = new File([blob], 'demo-closet.jpg', { type: blob.type })
+      await handleImageFile(file)
     } catch {
-      // If demo image fails, just set a placeholder indicator
-      setClosetPreview(null)
-      setClosetImage(null)
+      setClosetImage({ preview: null, base64: null })
     }
   }
 
   const getOutfit = async () => {
-    if (!location && !mood && !scene) {
-      setError('Please fill in at least one field before generating.')
+    if (!location.trim()) {
+      setError('Please enter a location')
       return
     }
     setLoading(true)
@@ -77,181 +69,154 @@ function App() {
     setResult(null)
 
     try {
-      const response = await fetch('https://cloth-backend.aitist.ai/api/chat', {
+      const resp = await fetch(`${BACKEND_URL}/api/outfit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: `You are a fashion stylist AI. Generate a complete outfit recommendation.\n\nUser details:\n- Location: ${location || 'Not specified'}\n- Mood: ${mood || 'Not specified'}\n- Scene/Occasion: ${scene || 'Not specified'}\n\nBased on the closet photo provided (if any), suggest 1 complete outfit with specific items, why it works, and styling tips.`,
-          image_base64: closetImage || null
-        })
+          location,
+          mood,
+          scene,
+          closet_image_base64: closetImage?.base64 || null,
+        }),
       })
-      if (!response.ok) {
-        throw new Error(`API error: ${response.status} ${response.statusText}`)
-      }
-      const data = await response.json()
+      if (!resp.ok) throw new Error(`API error ${resp.status}`)
+      const data = await resp.json()
       setResult(data)
     } catch (err) {
-      setError(err.message || 'Something went wrong. Please try again.')
+      setError(err.message)
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="app-container">
+    <div className="app">
+      {/* Header */}
       <header className="app-header">
         <h1>🥥 Coco AI</h1>
-        <p className="app-subtitle">AI-powered outfit recommendations</p>
+        <p className="app-subtitle">Your personal AI stylist</p>
       </header>
 
       <div className="app-layout">
-        {/* Left Panel - Inputs */}
+        {/* ── Left Panel: Inputs ── */}
         <div className="input-panel">
-          <h2 className="panel-title">Your Style Profile</h2>
+          <h2 className="panel-title">Your Details</h2>
 
-          <div className="form-group">
+          {/* Location */}
+          <div className="field">
             <label>📍 Location</label>
             <input
               type="text"
-              className="form-input"
-              placeholder="San Francisco, CA"
               value={location}
-              onChange={(e) => setLocation(e.target.value)}
+              onChange={e => setLocation(e.target.value)}
+              placeholder="San Francisco, CA"
+              className="text-input"
             />
           </div>
 
-          <div className="form-group">
+          {/* Mood */}
+          <div className="field">
             <label>😊 Mood</label>
-            <select
-              className="form-select"
-              value={mood}
-              onChange={(e) => setMood(e.target.value)}
-            >
-              <option value="">Select mood...</option>
-              <option value="Happy">Happy</option>
-              <option value="Casual">Casual</option>
-              <option value="Professional">Professional</option>
-              <option value="Date Night">Date Night</option>
-              <option value="Sporty">Sporty</option>
-              <option value="Cozy">Cozy</option>
+            <select value={mood} onChange={e => setMood(e.target.value)} className="select-input">
+              {MOODS.map(m => <option key={m}>{m}</option>)}
             </select>
           </div>
 
-          <div className="form-group">
+          {/* Closet Upload */}
+          <div className="field">
             <label>👗 My Closet</label>
             <div
-              className={`closet-upload ${isDragging ? 'dragging' : ''} ${closetPreview ? 'has-image' : ''}`}
-              onClick={() => fileInputRef.current?.click()}
+              className={`closet-upload ${dragging ? 'dragging' : ''} ${closetImage ? 'has-image' : ''}`}
+              onClick={() => fileRef.current?.click()}
+              onDragOver={e => { e.preventDefault(); setDragging(true) }}
+              onDragLeave={() => setDragging(false)}
               onDrop={handleDrop}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
             >
-              {closetPreview ? (
-                <div className="closet-preview">
-                  <img src={closetPreview} alt="Closet preview" />
-                  <div className="closet-overlay">
-                    <span>Click to change</span>
-                  </div>
-                </div>
+              {closetImage?.preview ? (
+                <img src={closetImage.preview} alt="closet" className="closet-preview" />
               ) : (
-                <div className="closet-placeholder">
-                  <span className="upload-icon">📤</span>
-                  <span>Click or drag & drop</span>
-                  <span className="upload-hint">Upload a photo of your closet or outfit</span>
+                <div className="upload-placeholder">
+                  <span className="upload-icon">📷</span>
+                  <span>Click or drag to upload closet photo</span>
+                  <span className="upload-hint">JPG, PNG supported</span>
                 </div>
               )}
             </div>
             <input
-              ref={fileInputRef}
+              ref={fileRef}
               type="file"
               accept="image/*"
               style={{ display: 'none' }}
-              onChange={handleFileChange}
+              onChange={e => handleImageFile(e.target.files[0])}
             />
+            {closetImage && (
+              <button className="remove-btn" onClick={() => setClosetImage(null)}>✕ Remove photo</button>
+            )}
           </div>
 
-          <div className="form-group">
+          {/* Scene */}
+          <div className="field">
             <label>🎭 Scene</label>
-            <select
-              className="form-select"
-              value={scene}
-              onChange={(e) => setScene(e.target.value)}
-            >
-              <option value="">Select scene...</option>
-              <option value="Daily">Daily</option>
-              <option value="Work">Work</option>
-              <option value="Outdoor">Outdoor</option>
-              <option value="Party">Party</option>
-              <option value="Gym">Gym</option>
-              <option value="Date">Date</option>
-              <option value="Travel">Travel</option>
+            <select value={scene} onChange={e => setScene(e.target.value)} className="select-input">
+              {SCENES.map(s => <option key={s}>{s}</option>)}
             </select>
           </div>
 
+          {/* Buttons */}
           <div className="button-group">
             <button
-              className="btn btn-primary"
+              className="btn-primary"
               onClick={getOutfit}
               disabled={loading}
             >
               {loading ? '⏳ Generating...' : '✨ Get Outfit'}
             </button>
-            <button
-              className="btn btn-secondary"
-              onClick={loadDemoData}
-              disabled={loading}
-            >
-              🎲 Load Demo Data
+            <button className="btn-secondary" onClick={loadDemoData} disabled={loading}>
+              🎲 Load Demo
             </button>
           </div>
+
+          {error && <div className="error-msg">⚠️ {error}</div>}
         </div>
 
-        {/* Right Panel - Output */}
+        {/* ── Right Panel: Output ── */}
         <div className="output-panel">
-          <h2 className="panel-title">Your Outfit Recommendation</h2>
+          <h2 className="panel-title">Your Outfit</h2>
 
-          <div className="output-content">
-            {!loading && !result && !error && (
-              <div className="empty-state">
-                <span className="empty-icon">👗</span>
-                <p>Your outfit recommendation will appear here ✨</p>
-                <p className="empty-hint">Fill in your style profile and click "Get Outfit"</p>
-              </div>
-            )}
+          {loading && (
+            <div className="loading-state">
+              <div className="loading-spinner" />
+              <p>Styling your look...</p>
+              <p className="loading-sub">Consulting stylist + generating image</p>
+            </div>
+          )}
 
-            {loading && (
-              <div className="loading-state">
-                <div className="loading-spinner"></div>
-                <p>Generating your outfit...</p>
-              </div>
-            )}
+          {!loading && !result && (
+            <div className="empty-state">
+              <span className="empty-icon">👗</span>
+              <p>Your outfit recommendation will appear here ✨</p>
+              <p className="empty-sub">Fill in your details and tap Get Outfit</p>
+            </div>
+          )}
 
-            {error && (
-              <div className="error-state">
-                <span>⚠️</span>
-                <p>{error}</p>
+          {!loading && result && (
+            <div className="result">
+              {result.images?.length > 0 && (
+                <img
+                  src={`data:image/png;base64,${result.images[0]}`}
+                  alt="Generated outfit"
+                  className="outfit-image"
+                />
+              )}
+              <div className="outfit-text">
+                {result.text.split('\n').map((line, i) => (
+                  <p key={i} className={line.startsWith('#') ? 'outfit-heading' : ''}>{line.replace(/^#+\s*/, '')}</p>
+                ))}
               </div>
-            )}
-
-            {result && !loading && (
-              <div className="result-content">
-                {result.images && result.images.length > 0 && (
-                  <img
-                    className="outfit-image"
-                    src={`data:image/png;base64,${result.images[0]}`}
-                    alt="Outfit recommendation"
-                  />
-                )}
-                <div className="outfit-text">
-                  {result.text}
-                </div>
-              </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
   )
 }
-
-export default App
