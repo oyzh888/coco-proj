@@ -101,6 +101,11 @@ def build_headers() -> dict:
 
 # --- Routes ---
 
+@app.get("/")
+async def root():
+    """Root - redirect to docs."""
+    return {"service": "Coco AI Backend", "status": "ok", "docs": "/docs", "health": "/health", "endpoints": ["/api/chat", "/api/chat/stream"]}
+
 @app.get("/health")
 async def health():
     """Simple health check."""

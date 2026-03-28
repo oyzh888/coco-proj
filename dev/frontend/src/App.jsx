@@ -1,231 +1,257 @@
-import { useState, useRef, useEffect } from 'react'
-import ReactMarkdown from 'react-markdown'
-import { sendMessage } from './api.js'
+import { useState, useRef } from 'react'
+import './App.css'
 
-/**
- * Coco AI - Main Chat Application
- * A clean chat interface that communicates with the FastAPI backend.
- */
+const DEMO_IMAGE_URL = 'https://images.unsplash.com/photo-1558769132-cb1aea458c5e?w=400&q=80'
 
-// A single message in the chat history
-function Message({ msg }) {
-  const isUser = msg.role === 'user'
-  return (
-    <div className={`message ${isUser ? 'user' : 'assistant'}`}>
-      <div className="bubble">
-        {/* Show image if user attached one */}
-        {msg.imagePreview && (
-          <img
-            className="message-image-preview"
-            src={msg.imagePreview}
-            alt="Uploaded"
-          />
-        )}
-        {/* Render text as markdown */}
-        {msg.text && (
-          <ReactMarkdown>{msg.text}</ReactMarkdown>
-        )}
-        {/* Render any response images */}
-        {msg.images && msg.images.map((b64, i) => (
-          <img
-            key={i}
-            className="response-image"
-            src={`data:image/png;base64,${b64}`}
-            alt={`AI generated image ${i + 1}`}
-          />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// Loading spinner
-function Spinner() {
-  return (
-    <div className="message assistant">
-      <div className="bubble loading">
-        <span className="dot" /><span className="dot" /><span className="dot" />
-      </div>
-    </div>
-  )
-}
-
-export default function App() {
-  const [messages, setMessages] = useState([])
-  const [input, setInput] = useState('')
-  const [imageFile, setImageFile] = useState(null)      // File object
-  const [imagePreview, setImagePreview] = useState(null) // data URL for preview
-  const [imageBase64, setImageBase64] = useState(null)  // pure base64 for API
+function App() {
+  const [location, setLocation] = useState('')
+  const [mood, setMood] = useState('')
+  const [scene, setScene] = useState('')
+  const [closetImage, setClosetImage] = useState(null) // base64 without prefix
+  const [closetPreview, setClosetPreview] = useState(null) // full data URL for preview
   const [loading, setLoading] = useState(false)
+  const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
-
-  const bottomRef = useRef(null)
+  const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef(null)
-  const textareaRef = useRef(null)
 
-  // Auto-scroll to bottom on new messages
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, loading])
-
-  // Handle image file selection
-  function handleFileChange(e) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    loadImage(file)
-  }
-
-  function loadImage(file) {
-    setImageFile(file)
+  const handleImageFile = (file) => {
+    if (!file || !file.type.startsWith('image/')) return
     const reader = new FileReader()
-    reader.onload = (ev) => {
-      const dataUrl = ev.target.result
-      setImagePreview(dataUrl)
-      // Strip "data:image/...;base64," prefix to get pure base64
+    reader.onload = (e) => {
+      const dataUrl = e.target.result
+      setClosetPreview(dataUrl)
+      // Strip data:image/...;base64, prefix
       const base64 = dataUrl.split(',')[1]
-      setImageBase64(base64)
+      setClosetImage(base64)
     }
     reader.readAsDataURL(file)
   }
 
-  // Handle drag-and-drop on the whole page
-  function handleDrop(e) {
+  const handleFileChange = (e) => {
+    handleImageFile(e.target.files[0])
+  }
+
+  const handleDrop = (e) => {
     e.preventDefault()
-    const file = e.dataTransfer.files?.[0]
-    if (file && file.type.startsWith('image/')) {
-      loadImage(file)
+    setIsDragging(false)
+    handleImageFile(e.dataTransfer.files[0])
+  }
+
+  const handleDragOver = (e) => {
+    e.preventDefault()
+    setIsDragging(true)
+  }
+
+  const handleDragLeave = () => setIsDragging(false)
+
+  const loadDemoData = async () => {
+    setLocation('San Francisco, CA')
+    setMood('Casual')
+    setScene('Daily')
+    // Load demo image as base64
+    try {
+      const res = await fetch(DEMO_IMAGE_URL)
+      const blob = await res.blob()
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        const dataUrl = e.target.result
+        setClosetPreview(dataUrl)
+        setClosetImage(dataUrl.split(',')[1])
+      }
+      reader.readAsDataURL(blob)
+    } catch {
+      // If demo image fails, just set a placeholder indicator
+      setClosetPreview(null)
+      setClosetImage(null)
     }
   }
 
-  function clearImage() {
-    setImageFile(null)
-    setImagePreview(null)
-    setImageBase64(null)
-    if (fileInputRef.current) fileInputRef.current.value = ''
-  }
-
-  async function handleSend() {
-    const text = input.trim()
-    if (!text && !imageBase64) return
-    if (loading) return
-
-    // Optimistically add user message
-    const userMsg = {
-      role: 'user',
-      text,
-      imagePreview,
+  const getOutfit = async () => {
+    if (!location && !mood && !scene) {
+      setError('Please fill in at least one field before generating.')
+      return
     }
-    setMessages(prev => [...prev, userMsg])
-    setInput('')
-    clearImage()
-    setError(null)
     setLoading(true)
+    setError(null)
+    setResult(null)
 
     try {
-      const { text: responseText, images } = await sendMessage(text, imageBase64)
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        text: responseText,
-        images,
-      }])
+      const response = await fetch('https://cloth-backend.aitist.ai/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: `You are a fashion stylist AI. Generate a complete outfit recommendation.\n\nUser details:\n- Location: ${location || 'Not specified'}\n- Mood: ${mood || 'Not specified'}\n- Scene/Occasion: ${scene || 'Not specified'}\n\nBased on the closet photo provided (if any), suggest 1 complete outfit with specific items, why it works, and styling tips.`,
+          image_base64: closetImage || null
+        })
+      })
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status} ${response.statusText}`)
+      }
+      const data = await response.json()
+      setResult(data)
     } catch (err) {
-      setError(err.message)
+      setError(err.message || 'Something went wrong. Please try again.')
     } finally {
       setLoading(false)
     }
   }
 
-  // Send on Enter (Shift+Enter for newline)
-  function handleKeyDown(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
-  }
-
   return (
-    <div
-      className="app"
-      onDragOver={e => e.preventDefault()}
-      onDrop={handleDrop}
-    >
-      {/* Header */}
-      <header className="header">
-        <span className="logo">🥥</span>
-        <h1 className="title">Coco AI</h1>
-        <span className="subtitle">Powered by OpenClaw</span>
+    <div className="app-container">
+      <header className="app-header">
+        <h1>🥥 Coco AI</h1>
+        <p className="app-subtitle">AI-powered outfit recommendations</p>
       </header>
 
-      {/* Chat window */}
-      <main className="chat-window">
-        {messages.length === 0 && (
-          <div className="empty-state">
-            <span className="empty-icon">🥥</span>
-            <p>Send a message to get started.</p>
-            <p className="hint">You can also attach an image!</p>
+      <div className="app-layout">
+        {/* Left Panel - Inputs */}
+        <div className="input-panel">
+          <h2 className="panel-title">Your Style Profile</h2>
+
+          <div className="form-group">
+            <label>📍 Location</label>
+            <input
+              type="text"
+              className="form-input"
+              placeholder="San Francisco, CA"
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+            />
           </div>
-        )}
-        {messages.map((msg, i) => (
-          <Message key={i} msg={msg} />
-        ))}
-        {loading && <Spinner />}
-        {error && (
-          <div className="error-banner">
-            ⚠️ {error}
+
+          <div className="form-group">
+            <label>😊 Mood</label>
+            <select
+              className="form-select"
+              value={mood}
+              onChange={(e) => setMood(e.target.value)}
+            >
+              <option value="">Select mood...</option>
+              <option value="Happy">Happy</option>
+              <option value="Casual">Casual</option>
+              <option value="Professional">Professional</option>
+              <option value="Date Night">Date Night</option>
+              <option value="Sporty">Sporty</option>
+              <option value="Cozy">Cozy</option>
+            </select>
           </div>
-        )}
-        <div ref={bottomRef} />
-      </main>
 
-      {/* Input area */}
-      <footer className="input-area">
-        {/* Image preview */}
-        {imagePreview && (
-          <div className="image-preview-strip">
-            <img src={imagePreview} alt="Preview" className="preview-thumb" />
-            <button className="remove-image" onClick={clearImage} title="Remove image">✕</button>
+          <div className="form-group">
+            <label>👗 My Closet</label>
+            <div
+              className={`closet-upload ${isDragging ? 'dragging' : ''} ${closetPreview ? 'has-image' : ''}`}
+              onClick={() => fileInputRef.current?.click()}
+              onDrop={handleDrop}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+            >
+              {closetPreview ? (
+                <div className="closet-preview">
+                  <img src={closetPreview} alt="Closet preview" />
+                  <div className="closet-overlay">
+                    <span>Click to change</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="closet-placeholder">
+                  <span className="upload-icon">📤</span>
+                  <span>Click or drag & drop</span>
+                  <span className="upload-hint">Upload a photo of your closet or outfit</span>
+                </div>
+              )}
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={handleFileChange}
+            />
           </div>
-        )}
 
-        <div className="input-row">
-          {/* Image upload button */}
-          <button
-            className="icon-btn upload-btn"
-            onClick={() => fileInputRef.current?.click()}
-            title="Attach image"
-          >
-            📎
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            style={{ display: 'none' }}
-            onChange={handleFileChange}
-          />
+          <div className="form-group">
+            <label>🎭 Scene</label>
+            <select
+              className="form-select"
+              value={scene}
+              onChange={(e) => setScene(e.target.value)}
+            >
+              <option value="">Select scene...</option>
+              <option value="Daily">Daily</option>
+              <option value="Work">Work</option>
+              <option value="Outdoor">Outdoor</option>
+              <option value="Party">Party</option>
+              <option value="Gym">Gym</option>
+              <option value="Date">Date</option>
+              <option value="Travel">Travel</option>
+            </select>
+          </div>
 
-          {/* Text input */}
-          <textarea
-            ref={textareaRef}
-            className="text-input"
-            placeholder="Message Coco AI… (Enter to send, Shift+Enter for newline)"
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            rows={1}
-          />
-
-          {/* Send button */}
-          <button
-            className={`send-btn ${loading ? 'disabled' : ''}`}
-            onClick={handleSend}
-            disabled={loading}
-            title="Send message"
-          >
-            {loading ? '⏳' : '➤'}
-          </button>
+          <div className="button-group">
+            <button
+              className="btn btn-primary"
+              onClick={getOutfit}
+              disabled={loading}
+            >
+              {loading ? '⏳ Generating...' : '✨ Get Outfit'}
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={loadDemoData}
+              disabled={loading}
+            >
+              🎲 Load Demo Data
+            </button>
+          </div>
         </div>
-      </footer>
+
+        {/* Right Panel - Output */}
+        <div className="output-panel">
+          <h2 className="panel-title">Your Outfit Recommendation</h2>
+
+          <div className="output-content">
+            {!loading && !result && !error && (
+              <div className="empty-state">
+                <span className="empty-icon">👗</span>
+                <p>Your outfit recommendation will appear here ✨</p>
+                <p className="empty-hint">Fill in your style profile and click "Get Outfit"</p>
+              </div>
+            )}
+
+            {loading && (
+              <div className="loading-state">
+                <div className="loading-spinner"></div>
+                <p>Generating your outfit...</p>
+              </div>
+            )}
+
+            {error && (
+              <div className="error-state">
+                <span>⚠️</span>
+                <p>{error}</p>
+              </div>
+            )}
+
+            {result && !loading && (
+              <div className="result-content">
+                {result.images && result.images.length > 0 && (
+                  <img
+                    className="outfit-image"
+                    src={`data:image/png;base64,${result.images[0]}`}
+                    alt="Outfit recommendation"
+                  />
+                )}
+                <div className="outfit-text">
+                  {result.text}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
+
+export default App
